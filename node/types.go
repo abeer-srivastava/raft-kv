@@ -79,7 +79,8 @@ type ClientRequest struct {
 
 // ClientResponse is sent back to the client after applying the command
 type ClientResponse struct {
-	Success bool   `json:"success"`
-	Value   string `json:"value,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Success    bool   `json:"success"`
+	Value      string `json:"value,omitempty"`
+	Error      string `json:"error,omitempty"`
+	LeaderAddr string `json:"leader_addr,omitempty"` // Set on redirect so clients can find the leader
 }

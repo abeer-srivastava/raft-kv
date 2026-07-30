@@ -13,11 +13,12 @@ import (
 
 // Server is a TCP server that handles incoming Raft RPCs
 type Server struct {
-	mu       sync.RWMutex
-	listener net.Listener
-	node     *node.RaftNode
-	addr     string
-	quit     chan struct{}
+	mu                sync.RWMutex
+	listener          net.Listener
+	node              *node.RaftNode
+	addr              string
+	quit              chan struct{}
+	clientRequestFunc func(node.ClientRequest) node.ClientResponse
 }
 
 // NewServer creates a new network server
@@ -27,6 +28,11 @@ func NewServer(addr string, raftNode *node.RaftNode) *Server {
 		node: raftNode,
 		quit: make(chan struct{}),
 	}
+}
+
+// SetClientRequestFunc sets the handler for client requests (allows serving GETs locally)
+func (s *Server) SetClientRequestFunc(fn func(node.ClientRequest) node.ClientResponse) {
+	s.clientRequestFunc = fn
 }
 
 // Start begins listening for connections
@@ -113,7 +119,7 @@ func (s *Server) dispatch(msg node.RPCMessage) (node.RPCMessage, error) {
 		if err := json.Unmarshal(msg.Data, &req); err != nil {
 			return node.RPCMessage{}, fmt.Errorf("failed to unmarshal RequestVote: %w", err)
 		}
-		resp := s.node.SubmitRequestVote(0, req) // peerID is 0 for incoming
+		resp := s.node.SubmitRequestVote(req.CandidateID, req)
 		data, _ := json.Marshal(resp)
 		respData = data
 
@@ -122,7 +128,7 @@ func (s *Server) dispatch(msg node.RPCMessage) (node.RPCMessage, error) {
 		if err := json.Unmarshal(msg.Data, &req); err != nil {
 			return node.RPCMessage{}, fmt.Errorf("failed to unmarshal AppendEntries: %w", err)
 		}
-		resp := s.node.SubmitAppendEntries(0, req) // peerID is 0 for incoming
+		resp := s.node.SubmitAppendEntries(req.LeaderID, req)
 		data, _ := json.Marshal(resp)
 		respData = data
 
@@ -131,7 +137,12 @@ func (s *Server) dispatch(msg node.RPCMessage) (node.RPCMessage, error) {
 		if err := json.Unmarshal(msg.Data, &req); err != nil {
 			return node.RPCMessage{}, fmt.Errorf("failed to unmarshal ClientRequest: %w", err)
 		}
-		resp := s.node.SubmitClientRequest(req)
+		var resp node.ClientResponse
+		if s.clientRequestFunc != nil {
+			resp = s.clientRequestFunc(req)
+		} else {
+			resp = s.node.SubmitClientRequest(req)
+		}
 		data, _ := json.Marshal(resp)
 		respData = data
 

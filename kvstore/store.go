@@ -47,7 +47,6 @@ func (s *Store) Apply(entry node.LogEntry) error {
 		delete(s.data, cmd.Key)
 		log.Printf("Applied DELETE %s", cmd.Key)
 	case "GET":
-		// GET is read-only, no-op for state machine
 	default:
 		return fmt.Errorf("unknown operation: %s", cmd.Op)
 	}
@@ -102,29 +101,40 @@ func (s *Store) Size() int {
 
 // ClientHandler handles client requests and forwards them to the Raft cluster
 type ClientHandler struct {
-	store     *Store
-	raftNode  *node.RaftNode
-	leaderID  int
+	store    *Store
+	raftNode *node.RaftNode
+	addrMap  map[int]string // maps node IDs to network addresses
 }
 
 // NewClientHandler creates a new client handler
-func NewClientHandler(store *Store, raftNode *node.RaftNode) *ClientHandler {
+func NewClientHandler(store *Store, raftNode *node.RaftNode, addrMap map[int]string) *ClientHandler {
 	return &ClientHandler{
 		store:    store,
 		raftNode: raftNode,
+		addrMap:  addrMap,
 	}
+}
+
+// leaderAddr returns the current leader's network address, or empty string if unknown
+func (h *ClientHandler) leaderAddr() string {
+	leaderID := h.raftNode.GetLeaderID()
+	if leaderID >= 0 {
+		if addr, ok := h.addrMap[leaderID]; ok {
+			return addr
+		}
+	}
+	return ""
 }
 
 // HandleRequest processes a client request
 func (h *ClientHandler) HandleRequest(req node.ClientRequest) node.ClientResponse {
 	switch req.Op {
 	case "GET":
-		// GET can be served locally
 		val, ok := h.store.Get(req.Key)
 		if !ok {
 			return node.ClientResponse{
 				Success: false,
-				Error:   fmt.Sprintf("key not found: %s", req.Key),
+				Error:   "key not found",
 			}
 		}
 		return node.ClientResponse{
@@ -133,8 +143,11 @@ func (h *ClientHandler) HandleRequest(req node.ClientRequest) node.ClientRespons
 		}
 
 	case "SET", "DELETE":
-		// Write operations must go through Raft consensus
-		return h.raftNode.SubmitClientRequest(req)
+		resp := h.raftNode.SubmitClientRequest(req)
+		if !resp.Success && resp.LeaderAddr == "" {
+			resp.LeaderAddr = h.leaderAddr()
+		}
+		return resp
 
 	default:
 		return node.ClientResponse{
