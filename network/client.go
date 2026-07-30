@@ -3,7 +3,6 @@ package network
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -12,20 +11,27 @@ import (
 )
 
 const (
- connectionTimeout = 2 * time.Second
- rpcTimeout       = 5 * time.Second
+	connectionTimeout = 2 * time.Second
+	rpcTimeout        = 5 * time.Second
 )
+
+type peerConn struct {
+	mu      sync.Mutex
+	conn    net.Conn
+	encoder *json.Encoder
+	decoder *json.Decoder
+}
 
 // Client handles outgoing RPC calls to Raft peers
 type Client struct {
-	mu      sync.RWMutex
-	clients map[string]net.Conn
+	mu    sync.Mutex
+	peers map[string]*peerConn
 }
 
 // NewClient creates a new network client
 func NewClient() *Client {
 	return &Client{
-		clients: make(map[string]net.Conn),
+		peers: make(map[string]*peerConn),
 	}
 }
 
@@ -104,82 +110,62 @@ func (c *Client) SendClientRequest(addr string, req node.ClientRequest) (*node.C
 	return &resp, nil
 }
 
-// sendRPC sends an RPC message to a peer and waits for the response
 func (c *Client) sendRPC(addr string, msg node.RPCMessage) (*node.RPCMessage, error) {
-	conn, err := c.getConnection(addr)
+	pc, err := c.getOrCreatePeerConn(addr)
 	if err != nil {
 		return nil, err
 	}
 
-	// Set deadline for the RPC
-	conn.SetDeadline(time.Now().Add(rpcTimeout))
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
 
-	encoder := json.NewEncoder(conn)
-	decoder := json.NewDecoder(conn)
+	pc.conn.SetDeadline(time.Now().Add(rpcTimeout))
 
-	if err := encoder.Encode(msg); err != nil {
-		c.removeConnection(addr)
-		return nil, fmt.Errorf("failed to send RPC: %w", err)
+	if err := pc.encoder.Encode(msg); err != nil {
+		c.removePeerConn(addr)
+		return nil, fmt.Errorf("failed to send RPC to %s: %w", addr, err)
 	}
 
 	var resp node.RPCMessage
-	if err := decoder.Decode(&resp); err != nil {
-		c.removeConnection(addr)
-		return nil, fmt.Errorf("failed to receive RPC response: %w", err)
+	if err := pc.decoder.Decode(&resp); err != nil {
+		c.removePeerConn(addr)
+		return nil, fmt.Errorf("failed to receive RPC response from %s: %w", addr, err)
 	}
 
-	// Reset deadline
-	conn.SetDeadline(time.Time{})
+	pc.conn.SetDeadline(time.Time{})
 
 	return &resp, nil
 }
 
-// getConnection gets or creates a connection to a peer
-func (c *Client) getConnection(addr string) (net.Conn, error) {
-	c.mu.RLock()
-	conn, exists := c.clients[addr]
-	c.mu.RUnlock()
-
-	if exists && conn != nil {
-		// Check if connection is still alive
-		_, err := conn.Write([]byte{})
-		if err == nil {
-			return conn, nil
-		}
-		// Connection is dead, remove it
-		c.removeConnection(addr)
-	}
-
-	// Create new connection
+func (c *Client) getOrCreatePeerConn(addr string) (*peerConn, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Double-check after acquiring write lock
-	if conn, exists = c.clients[addr]; exists && conn != nil {
-		_, err := conn.Write([]byte{})
-		if err == nil {
-			return conn, nil
-		}
-		c.removeConnection(addr)
+	if pc, exists := c.peers[addr]; exists {
+		return pc, nil
 	}
 
-	newConn, err := net.DialTimeout("tcp", addr, connectionTimeout)
+	conn, err := net.DialTimeout("tcp", addr, connectionTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s: %w", addr, err)
 	}
 
-	c.clients[addr] = newConn
-	return newConn, nil
+	pc := &peerConn{
+		conn:    conn,
+		encoder: json.NewEncoder(conn),
+		decoder: json.NewDecoder(conn),
+	}
+	c.peers[addr] = pc
+	return pc, nil
 }
 
-// removeConnection removes a connection from the cache
-func (c *Client) removeConnection(addr string) {
+func (c *Client) removePeerConn(addr string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if conn, exists := c.clients[addr]; exists {
-		conn.Close()
-		delete(c.clients, addr)
+	if pc, exists := c.peers[addr]; exists {
+		pc.conn.Close()
+		delete(c.peers, addr)
 	}
 }
 
@@ -188,16 +174,10 @@ func (c *Client) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for addr, conn := range c.clients {
-		conn.Close()
-		delete(c.clients, addr)
+	for addr, pc := range c.peers {
+		pc.conn.Close()
+		delete(c.peers, addr)
 	}
-}
-
-// NodeAddress maps node IDs to their network addresses
-type NodeAddress struct {
-	ID   int
-	Addr string
 }
 
 // SendRequestVoteWithID sends a RequestVote RPC using node ID instead of address
@@ -216,20 +196,4 @@ func (c *Client) SendAppendEntriesWithID(addrMap map[int]string, peerID int, req
 		return nil, fmt.Errorf("unknown peer ID: %d", peerID)
 	}
 	return c.SendAppendEntries(addr, req)
-}
-
-// ReadFull reads exactly n bytes from a connection
-func ReadFull(conn net.Conn, buf []byte) (int, error) {
-	total := 0
-	for total < len(buf) {
-		n, err := conn.Read(buf[total:])
-		total += n
-		if err != nil {
-			if err == io.EOF {
-				return total, io.ErrUnexpectedEOF
-			}
-			return total, err
-		}
-	}
-	return total, nil
 }
