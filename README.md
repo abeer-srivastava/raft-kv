@@ -1,6 +1,6 @@
-# Raft KV: A From-Scratch Implementation of the Raft Consensus Algorithm
+# Raft KV: A Scratch Implementation of the Raft Consensus Algorithm
 
-A distributed key-value store built on the [Raft consensus algorithm](https://raft.github.io/raft.pdf) (Diego Ongaro's PhD thesis, Stanford 2014). Implemented in Go with raw TCP/JSON networking.
+A distributed key-value store built on the [Raft consensus algorithm](https://raft.github.io/raft.pdf).Implemented in Go with raw TCP/JSON networking.
 
 ## Table of Contents
 
@@ -33,12 +33,12 @@ Raft is a **distributed consensus algorithm** designed to be understandable. It 
 
 ```
                   ┌─────────────┐
-                  │   Follower   │
+                  │   Follower  │
                   └──────┬──────┘
                          │ election timeout
                          ▼
                   ┌─────────────┐
-          ┌───────│  Candidate   │───────┐
+          ┌───────│  Candidate  │───────┐
           │       └──────┬──────┘       │
           │              │              │
    receives vote    votes majority  receives
@@ -46,12 +46,12 @@ Raft is a **distributed consensus algorithm** designed to be understandable. It 
           │              │              │
           ▼              ▼              ▼
    ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-   │   Follower   │  │   Leader    │  │   Follower   │
+   │   Follower  │  │   Leader    │  │   Follower  │
    └─────────────┘  └──────┬──────┘  └─────────────┘
                            │ discovers higher term
                            ▼
                     ┌─────────────┐
-                    │   Follower   │
+                    │   Follower  │
                     └─────────────┘
 ```
 
@@ -259,36 +259,36 @@ OR
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                        Raft KV Cluster                                  │
 │                                                                         │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐      │
-│  │   Node 0         │  │   Node 1         │  │   Node 2         │      │
-│  │  (Leader)        │  │  (Follower)      │  │  (Follower)      │      │
-│  │                  │  │                  │  │                  │      │
-│  │ ┌──────────────┐ │  │ ┌──────────────┐ │  │ ┌──────────────┐ │      │
-│  │ │  Raft Node   │ │  │ │  Raft Node   │ │  │ │  Raft Node   │ │      │
-│  │ │              │ │  │ │              │ │  │ │              │ │      │
-│  │ │ • State      │ │  │ │ • State      │ │  │ │ • State      │ │      │
-│  │ │ • Term       │ │  │ │ • Term       │ │  │ │ • Term       │ │      │
-│  │ │ • Log        │ │  │ │ • Log        │ │  │ │ • Log        │ │      │
-│  │ │ • Commit Idx │ │  │ │ • Commit Idx │ │  │ │ • Commit Idx │ │      │
-│  │ └──────┬───────┘ │  │ └──────┬───────┘ │  │ └──────┬───────┘ │      │
-│  │        │         │  │        │         │  │        │         │      │
-│  │ ┌──────▼───────┐ │  │ ┌──────▼───────┐ │  │ ┌──────▼───────┐ │      │
-│  │ │  Network     │ │  │ │  Network     │ │  │ │  Network     │ │      │
-│  │ │  Layer       │ │  │ │  Layer       │ │  │ │  Layer       │ │      │
-│  │ │  (TCP/JSON)  │ │  │ │  (TCP/JSON)  │ │  │ │  (TCP/JSON)  │ │      │
-│  │ └──────┬───────┘ │  │ └──────┬───────┘ │  │ └──────┬───────┘ │      │
-│  │        │         │  │        │         │  │        │         │      │
-│  │ ┌──────▼───────┐ │  │ ┌──────▼───────┐ │  │ ┌──────▼───────┐ │      │
-│  │ │  KV Store    │ │  │ │  KV Store    │ │  │ │  KV Store    │ │      │
-│  │ │  (State      │ │  │ │  (State      │ │  │ │  (State      │ │      │
-│  │ │   Machine)   │ │  │ │   Machine)   │ │  │ │   Machine)   │ │      │
-│  │ └──────────────┘ │  │ └──────────────┘ │  │ └──────────────┘ │      │
-│  │                  │  │                  │  │                  │      │
-│  │ ┌──────────────┐ │  │ ┌──────────────┐ │  │ ┌──────────────┐ │      │
-│  │ │ Persistence  │ │  │ │ Persistence  │ │  │ │ Persistence  │ │      │
-│  │ │ (WAL File)   │ │  │ │ (WAL File)   │ │  │ │ (WAL File)   │ │      │
-│  │ └──────────────┘ │  │ └──────────────┘ │  │ └──────────────┘ │      │
-│  └──────────────────┘  └──────────────────┘  └──────────────────┘      │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐       │
+│  │   Node 0         │  │   Node 1         │  │   Node 2         │       │
+│  │  (Leader)        │  │  (Follower)      │  │  (Follower)      │       │
+│  │                  │  │                  │  │                  │       │
+│  │ ┌──────────────┐ │  │ ┌──────────────┐ │  │ ┌──────────────┐ │       │
+│  │ │  Raft Node   │ │  │ │  Raft Node   │ │  │ │  Raft Node   │ │       │
+│  │ │              │ │  │ │              │ │  │ │              │ │       │
+│  │ │ • State      │ │  │ │ • State      │ │  │ │ • State      │ │       │
+│  │ │ • Term       │ │  │ │ • Term       │ │  │ │ • Term       │ │       │
+│  │ │ • Log        │ │  │ │ • Log        │ │  │ │ • Log        │ │       │
+│  │ │ • Commit Idx │ │  │ │ • Commit Idx │ │  │ │ • Commit Idx │ │       │
+│  │ └──────┬───────┘ │  │ └──────┬───────┘ │  │ └──────┬───────┘ │       │
+│  │        │         │  │        │         │  │        │         │       │
+│  │ ┌──────▼───────┐ │  │ ┌──────▼───────┐ │  │ ┌──────▼──────┐ │       │
+│  │ │  Network     │ │  │ │  Network     │ │  │ │  Network     │ │       │
+│  │ │  Layer       │ │  │ │  Layer       │ │  │ │  Layer       │ │       │
+│  │ │  (TCP/JSON)  │ │  │ │  (TCP/JSON)  │ │  │ │  (TCP/JSON)  │ │       │
+│  │ └──────┬───────┘ │  │ └──────┬───────┘ │  │ └──────┬───────┘ │       │
+│  │        │         │  │        │         │  │        │         │       │
+│  │ ┌──────▼───────┐ │  │ ┌──────▼───────┐ │  │ ┌──────▼──────┐ │       │
+│  │ │  KV Store    │ │  │ │  KV Store    │ │  │ │  KV Store    │ │       │
+│  │ │  (State      │ │  │ │  (State      │ │  │ │  (State      │ │       │
+│  │ │   Machine)   │ │  │ │   Machine)   │ │  │ │   Machine)   │ │       │
+│  │ └──────────────┘ │  │ └──────────────┘ │  │ └──────────────┘ │       │
+│  │                  │  │                  │  │                  │       │
+│  │ ┌──────────────┐ │  │ ┌──────────────┐ │  │ ┌──────────────┐ │       │
+│  │ │ Persistence  │ │  │ │ Persistence  │ │  │ │ Persistence  │ │       │
+│  │ │ (WAL File)   │ │  │ │ (WAL File)   │ │  │ │ (WAL File)   │ │       │
+│  │ └──────────────┘ │  │ └──────────────┘ │  │ └──────────────┘ │       │
+│  └──────────────────┘  └──────────────────┘  └──────────────────┘       │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -300,57 +300,57 @@ OR
          │
          ▼
   ┌─────────────────┐
-  │  Any Node        │ ──── If not leader, redirect
+  │  Any Node       │ ──── If not leader, redirect
   └────────┬────────┘
            │ (if leader)
            ▼
   ┌─────────────────┐
-  │  Append to Log   │
+  │  Append to Log  │
   └────────┬────────┘
            │
            ▼
   ┌─────────────────┐     ┌─────────────────┐
-  │  AppendEntries   │────▶│  AppendEntries   │
-  │  RPC to Node 1   │     │  RPC to Node 2   │
+  │  AppendEntries  │────▶│  AppendEntries  │
+  │  RPC to Node 1  │     │  RPC to Node 2  │
   └────────┬────────┘     └────────┬────────┘
            │                       │
            ▼                       ▼
   ┌─────────────────┐     ┌─────────────────┐
-  │  Validate &      │     │  Validate &      │
-  │  Append to Log   │     │  Append to Log   │
+  │  Validate &     │     │  Validate &     │
+  │  Append to Log  │     │  Append to Log  │
   └────────┬────────┘     └────────┬────────┘
            │                       │
            ▼                       ▼
   ┌─────────────────┐     ┌─────────────────┐
-  │  Reply Success   │     │  Reply Success   │
+  │  Reply Success  │     │  Reply Success  │
   └────────┬────────┘     └────────┬────────┘
            │                       │
            └───────────┬───────────┘
                        │
                        ▼
   ┌─────────────────┐
-  │  Update          │
-  │  matchIndex      │
-  │  Check Quorum    │
+  │  Update         │
+  │  matchIndex     │
+  │  Check Quorum   │
   └────────┬────────┘
            │ (majority replicated?)
            ▼
   ┌─────────────────┐
-  │  Advance         │
-  │  commitIndex     │
+  │  Advance        │
+  │  commitIndex    │
   └────────┬────────┘
            │
            ▼
   ┌─────────────────┐
-  │  Apply to        │
-  │  State Machine   │
-  │  (KV Store)      │
+  │  Apply to       │
+  │  State Machine  │
+  │  (KV Store)     │
   └────────┬────────┘
            │
            ▼
   ┌─────────────────┐
-  │  Return Result   │
-  │  to Client       │
+  │  Return Result  │
+  │  to Client      │
   └─────────────────┘
 ```
 
@@ -361,16 +361,16 @@ OR
          │
          ▼
   ┌─────────────────┐
-  │  Become           │
-  │  Candidate        │
-  │  (term++)         │
-  │  (vote for self)  │
+  │  Become         │
+  │  Candidate      │
+  │  (term++)       │
+  │  (vote for self)│
   └────────┬────────┘
            │
            ▼
   ┌─────────────────┐     ┌─────────────────┐
-  │  RequestVote      │────▶│  RequestVote      │
-  │  RPC to Node 1    │     │  RPC to Node 2    │
+  │  RequestVote    │────▶│  RequestVote    │
+  │  RPC to Node 1  │     │  RPC to Node 2  │
   └────────┬────────┘     └────────┬────────┘
            │                       │
            ▼                       ▼
