@@ -3,7 +3,9 @@ package node
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 )
@@ -11,21 +13,19 @@ import (
 // WALRecord represents a single record in the write-ahead log
 type WALRecord struct {
 	Type string `json:"type"` // "term", "entry", "entries"
-	// For term records
-	Term    uint64 `json:"term,omitempty"`
-	VotedFor int   `json:"voted_for,omitempty"`
-	// For entry records
-	Entry  *LogEntry  `json:"entry,omitempty"`
+	Term     uint64 `json:"term,omitempty"`
+	VotedFor int    `json:"voted_for"`
+	Entry   *LogEntry  `json:"entry,omitempty"`
 	Entries []LogEntry `json:"entries,omitempty"`
 }
 
 // WAL is a simple write-ahead log for persisting Raft state
 type WAL struct {
-	mu       sync.Mutex
-	file     *os.File
-	writer   *bufio.Writer
-	dir      string
-	nodeID   int
+	mu     sync.Mutex
+	file   *os.File
+	writer *bufio.Writer
+	dir    string
+	nodeID int
 }
 
 // NewWAL creates a new WAL for the given node
@@ -50,8 +50,8 @@ func (w *WAL) SaveTerm(term uint64, votedFor int) error {
 	defer w.mu.Unlock()
 
 	record := WALRecord{
-		Type:      "term",
-		Term:      term,
+		Type:     "term",
+		Term:     term,
 		VotedFor: votedFor,
 	}
 
@@ -91,13 +91,13 @@ func (w *WAL) writeRecord(record WALRecord) error {
 		return fmt.Errorf("failed to marshal WAL record: %w", err)
 	}
 
-	// Write length prefix (4 bytes, big-endian)
 	length := uint32(len(data))
-	buf := make([]byte, 4)
-	buf[0] = byte(length >> 24)
-	buf[1] = byte(length >> 16)
-	buf[2] = byte(length >> 8)
-	buf[3] = byte(length)
+	buf := []byte{
+		byte(length >> 24),
+		byte(length >> 16),
+		byte(length >> 8),
+		byte(length),
+	}
 
 	if _, err := w.writer.Write(buf); err != nil {
 		return fmt.Errorf("failed to write WAL length: %w", err)
@@ -119,7 +119,7 @@ func (w *WAL) Recover(node *RaftNode) error {
 	file, err := os.Open(filename)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // No WAL file, start fresh
+			return nil
 		}
 		return fmt.Errorf("failed to open WAL for recovery: %w", err)
 	}
@@ -127,11 +127,10 @@ func (w *WAL) Recover(node *RaftNode) error {
 
 	reader := bufio.NewReader(file)
 	for {
-		// Read length prefix
 		lengthBuf := make([]byte, 4)
-		_, err := reader.Read(lengthBuf)
+		_, err := io.ReadFull(reader, lengthBuf)
 		if err != nil {
-			if err.Error() == "EOF" {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				break
 			}
 			return fmt.Errorf("failed to read WAL length: %w", err)
@@ -142,20 +141,20 @@ func (w *WAL) Recover(node *RaftNode) error {
 			uint32(lengthBuf[2])<<8 |
 			uint32(lengthBuf[3])
 
-		// Read data
 		data := make([]byte, length)
-		_, err = reader.Read(data)
+		_, err = io.ReadFull(reader, data)
 		if err != nil {
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				break
+			}
 			return fmt.Errorf("failed to read WAL data: %w", err)
 		}
 
-		// Parse record
 		var record WALRecord
 		if err := json.Unmarshal(data, &record); err != nil {
 			return fmt.Errorf("failed to parse WAL record: %w", err)
 		}
 
-		// Apply record
 		switch record.Type {
 		case "term":
 			node.currentTerm = record.Term
@@ -179,7 +178,7 @@ func (w *WAL) Recover(node *RaftNode) error {
 
 	if len(node.raftLog) > 0 {
 		node.commitIndex = node.raftLog[len(node.raftLog)-1].Index
-		node.lastApplied = node.commitIndex
+		node.lastApplied = 0
 	}
 
 	return nil
