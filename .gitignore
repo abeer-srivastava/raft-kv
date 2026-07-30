@@ -31,3 +31,4 @@ Thumbs.db
 data/
 *.wal
 *.log
+raft-kv-cli
