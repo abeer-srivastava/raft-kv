@@ -53,6 +53,9 @@ func main() {
 	sendAppendEntries := func(peerID int, req node.AppendEntriesRequest) (*node.AppendEntriesResponse, error) {
 		return client.SendAppendEntriesWithID(addrMap, peerID, req)
 	}
+	sendInstallSnapshot := func(peerID int, req node.InstallSnapshotRequest) (*node.InstallSnapshotResponse, error) {
+		return client.SendInstallSnapshotWithID(addrMap, peerID, req)
+	}
 
 	wal, err := node.NewWAL(*dataDir, *nodeID)
 	if err != nil {
@@ -70,13 +73,36 @@ func main() {
 		sendAppendEntries,
 		wal,
 	)
+	raftNode.SetSendInstallSnapshot(sendInstallSnapshot)
 
 	store := kvstore.NewStore()
 
+	// Wire snapshot notification channel for InstallSnapshot → state machine apply
+	snapshotNotifyCh := make(chan node.SnapshotData, 1)
+	raftNode.SetSnapshotNotifyCh(snapshotNotifyCh)
+
+	// Configure automatic log compaction every 100 applied entries
+	raftNode.SetSnapshotConfig(100, func() ([]byte, error) {
+		return store.Snapshot()
+	})
+
+	// Apply loop: applies committed entries and handles snapshot notifications
 	go func() {
-		for entry := range commitCh {
-			if err := store.Apply(entry); err != nil {
-				log.Printf("Failed to apply entry: %v", err)
+		for {
+			select {
+			case entry, ok := <-commitCh:
+				if !ok {
+					return
+				}
+				if err := store.Apply(entry); err != nil {
+					log.Printf("Failed to apply entry: %v", err)
+				}
+			case snap := <-snapshotNotifyCh:
+				if err := store.LoadSnapshot(snap.Data); err != nil {
+					log.Printf("Failed to load snapshot: %v", err)
+				} else {
+					log.Printf("Loaded snapshot at index=%d term=%d", snap.Index, snap.Term)
+				}
 			}
 		}
 	}()
