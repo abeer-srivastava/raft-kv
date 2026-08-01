@@ -57,14 +57,28 @@ type AppendEntriesRequest struct {
 
 // AppendEntriesResponse is the reply to AppendEntriesRequest
 type AppendEntriesResponse struct {
-	Term    uint64 `json:"term"`
-	Success bool   `json:"success"`
-	// For optimization: follower's last log index to speed up backtracking
+	Term          uint64 `json:"term"`
+	Success       bool   `json:"success"`
 	ConflictIndex uint64 `json:"conflict_index"`
 	ConflictTerm  uint64 `json:"conflict_term"`
 }
 
-// RPCMessage is the envelope for all RPC messages over the wire
+// InstallSnapshotRequest is sent by leader to stream snapshots to slow followers
+type InstallSnapshotRequest struct {
+	Term              uint64 `json:"term"`
+	LeaderID          int    `json:"leader_id"`
+	LastIncludedIndex uint64 `json:"last_included_index"`
+	LastIncludedTerm  uint64 `json:"last_included_term"`
+	Data              []byte `json:"data"`
+	Done              bool   `json:"done"`
+}
+
+// InstallSnapshotResponse is the reply to InstallSnapshotRequest
+type InstallSnapshotResponse struct {
+	Term uint64 `json:"term"`
+}
+
+// RPCMessage is the envelope for RPC messages
 type RPCMessage struct {
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data"`
@@ -72,7 +86,7 @@ type RPCMessage struct {
 
 // ClientRequest represents a client command sent to the cluster
 type ClientRequest struct {
-	Op    string `json:"op"`    // "SET", "GET", "DELETE"
+	Op    string `json:"op"` // "SET", "GET", "DELETE"
 	Key   string `json:"key"`
 	Value string `json:"value,omitempty"`
 }
@@ -82,5 +96,17 @@ type ClientResponse struct {
 	Success    bool   `json:"success"`
 	Value      string `json:"value,omitempty"`
 	Error      string `json:"error,omitempty"`
-	LeaderAddr string `json:"leader_addr,omitempty"` // Set on redirect so clients can find the leader
+	LeaderAddr string `json:"leader_addr,omitempty"`
 }
+
+// SnapshotData is sent through the snapshot channel to notify the state machine
+// that it should replace its state with the provided snapshot data.
+type SnapshotData struct {
+	Index uint64 // Last included index in the snapshot
+	Term  uint64 // Last included term in the snapshot
+	Data  []byte // Serialized state machine state
+}
+
+// SnapshotProvider is a function that returns a snapshot of the current state machine.
+// It is called by the Raft node when automatic compaction is triggered.
+type SnapshotProvider func() ([]byte, error)

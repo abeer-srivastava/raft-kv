@@ -12,14 +12,15 @@ import (
 
 // WALRecord represents a single record in the write-ahead log
 type WALRecord struct {
-	Type string `json:"type"` // "term", "entry", "entries"
-	Term     uint64 `json:"term,omitempty"`
-	VotedFor int    `json:"voted_for"`
-	Entry   *LogEntry  `json:"entry,omitempty"`
-	Entries []LogEntry `json:"entries,omitempty"`
+	Type          string     `json:"type"` // "term", "entry", "entries", "truncate"
+	Term          uint64     `json:"term,omitempty"`
+	VotedFor      int        `json:"voted_for"`
+	Entry         *LogEntry  `json:"entry,omitempty"`
+	Entries       []LogEntry `json:"entries,omitempty"`
+	TruncateIndex uint64     `json:"truncate_index,omitempty"`
 }
 
-// WAL is a simple write-ahead log for persisting Raft state
+// WAL is a write-ahead log for persisting Raft state
 type WAL struct {
 	mu     sync.Mutex
 	file   *os.File
@@ -84,7 +85,20 @@ func (w *WAL) AppendEntries(entries []LogEntry) error {
 	return w.writeRecord(record)
 }
 
-// writeRecord writes a single record to the WAL
+// TruncateLog persists a log truncation event starting at index
+func (w *WAL) TruncateLog(index uint64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	record := WALRecord{
+		Type:          "truncate",
+		TruncateIndex: index,
+	}
+
+	return w.writeRecord(record)
+}
+
+// writeRecord writes a single record to the WAL and flushes to disk
 func (w *WAL) writeRecord(record WALRecord) error {
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -107,7 +121,11 @@ func (w *WAL) writeRecord(record WALRecord) error {
 		return fmt.Errorf("failed to write WAL data: %w", err)
 	}
 
-	return w.writer.Flush()
+	if err := w.writer.Flush(); err != nil {
+		return fmt.Errorf("failed to flush WAL: %w", err)
+	}
+
+	return w.file.Sync()
 }
 
 // Recover reads the WAL and restores the node's state
@@ -173,13 +191,17 @@ func (w *WAL) Recover(node *RaftNode) error {
 				}
 				node.raftLog[entry.Index] = entry
 			}
+		case "truncate":
+			if record.TruncateIndex < uint64(len(node.raftLog)) {
+				node.raftLog = node.raftLog[:record.TruncateIndex]
+			}
 		}
 	}
 
-	if len(node.raftLog) > 0 {
-		node.commitIndex = node.raftLog[len(node.raftLog)-1].Index
-		node.lastApplied = 0
-	}
+	// Safety guarantee: commitIndex is volatile state and MUST stay 0 upon restart.
+	// It advances only when confirmed by a leader's AppendEntries.
+	node.commitIndex = 0
+	node.lastApplied = 0
 
 	return nil
 }

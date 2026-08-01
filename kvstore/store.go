@@ -18,8 +18,8 @@ type Command struct {
 
 // Store is a key-value store that acts as the Raft state machine
 type Store struct {
-	mu    sync.RWMutex
-	data  map[string]string
+	mu   sync.RWMutex
+	data map[string]string
 }
 
 // NewStore creates a new KV store
@@ -47,6 +47,7 @@ func (s *Store) Apply(entry node.LogEntry) error {
 		delete(s.data, cmd.Key)
 		log.Printf("Applied DELETE %s", cmd.Key)
 	case "GET":
+		// Read index linearizability check entry (no mutation)
 	default:
 		return fmt.Errorf("unknown operation: %s", cmd.Op)
 	}
@@ -99,6 +100,30 @@ func (s *Store) Size() int {
 	return len(s.data)
 }
 
+// Snapshot serializes the entire store state to JSON for snapshotting.
+func (s *Store) Snapshot() ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return json.Marshal(s.data)
+}
+
+// LoadSnapshot replaces the entire store state from a JSON-serialized snapshot.
+// This is called when an InstallSnapshot RPC is received from the leader.
+func (s *Store) LoadSnapshot(data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	newData := make(map[string]string)
+	if err := json.Unmarshal(data, &newData); err != nil {
+		return fmt.Errorf("failed to unmarshal snapshot: %w", err)
+	}
+
+	s.data = newData
+	log.Printf("Store: loaded snapshot with %d keys", len(newData))
+	return nil
+}
+
 // ClientHandler handles client requests and forwards them to the Raft cluster
 type ClientHandler struct {
 	store    *Store
@@ -126,15 +151,25 @@ func (h *ClientHandler) leaderAddr() string {
 	return ""
 }
 
-// HandleRequest processes a client request
+// HandleRequest processes a client request with linearizable read/write guarantees
 func (h *ClientHandler) HandleRequest(req node.ClientRequest) node.ClientResponse {
 	switch req.Op {
 	case "GET":
+		// Linearizable Read: Pass GET request through Raft consensus to confirm leadership
+		resp := h.raftNode.SubmitClientRequest(req)
+		if !resp.Success {
+			if resp.LeaderAddr == "" {
+				resp.LeaderAddr = h.leaderAddr()
+			}
+			return resp
+		}
+
 		val, ok := h.store.Get(req.Key)
 		if !ok {
 			return node.ClientResponse{
-				Success: false,
-				Error:   "key not found",
+				Success:    false,
+				Error:      "key not found",
+				LeaderAddr: h.leaderAddr(),
 			}
 		}
 		return node.ClientResponse{
