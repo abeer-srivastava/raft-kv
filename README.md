@@ -329,30 +329,30 @@ OR
            └───────────┬───────────┘
                        │
                        ▼
-  ┌─────────────────┐
-  │  Update         │
-  │  matchIndex     │
-  │  Check Quorum   │
-  └────────┬────────┘
-           │ (majority replicated?)
-           ▼
-  ┌─────────────────┐
-  │  Advance        │
-  │  commitIndex    │
-  └────────┬────────┘
-           │
-           ▼
-  ┌─────────────────┐
-  │  Apply to       │
-  │  State Machine  │
-  │  (KV Store)     │
-  └────────┬────────┘
-           │
-           ▼
-  ┌─────────────────┐
-  │  Return Result  │
-  │  to Client      │
-  └─────────────────┘
+                ┌─────────────────┐
+                │  Update         │
+                │  matchIndex     │
+                │  Check Quorum   │
+                └────────┬────────┘
+                         │ (majority replicated?)
+                         ▼
+                ┌─────────────────┐
+                │  Advance        │
+                │  commitIndex    │
+                └────────┬────────┘
+                         │
+                         ▼
+                ┌─────────────────┐
+                │  Apply to       │
+                │  State Machine  │
+                │  (KV Store)     │
+                └────────┬────────┘
+                         │
+                         ▼
+                ┌─────────────────┐
+                │  Return Result  │
+                │  to Client      │
+                └─────────────────┘
 ```
 
 ### Leader Election Flow
@@ -385,16 +385,16 @@ OR
            │                       │
            ▼                       ▼
   ┌─────────────────┐     ┌─────────────────┐
-  │  Grant Vote       │     │  Grant Vote       │
+  │  Grant Vote     │     │  Grant Vote     │
   └────────┬────────┘     └────────┬────────┘
            │                       │
            └───────────┬───────────┘
                        │ (majority votes?)
                        ▼
-  ┌─────────────────┐
-  │ Become Leader   │
-  │ Start Heartbeats│
-  └─────────────────┘
+                ┌─────────────────┐
+                │  Become Leader  │
+                │ Start Heartbeats│
+                └─────────────────┘
 ```
 
 ---
