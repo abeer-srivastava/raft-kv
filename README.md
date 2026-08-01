@@ -1,6 +1,6 @@
 # Raft KV: A Scratch Implementation of the Raft Consensus Algorithm
 
-A distributed key-value store built on the [Raft consensus algorithm](https://raft.github.io/raft.pdf).Implemented in Go with raw TCP/JSON networking.
+A distributed, fault-tolerant key-value store built on the [Raft consensus algorithm](https://raft.github.io/raft.pdf). Implemented in Go with **gRPC/Protobuf** networking, strict **log compaction**, and robust linearizable reads.
 
 ## Table of Contents
 
@@ -275,7 +275,7 @@ OR
 │  │ ┌──────▼───────┐ │  │ ┌──────▼───────┐ │  │ ┌──────▼──────┐ │       │
 │  │ │  Network     │ │  │ │  Network     │ │  │ │  Network     │ │       │
 │  │ │  Layer       │ │  │ │  Layer       │ │  │ │  Layer       │ │       │
-│  │ │  (TCP/JSON)  │ │  │ │  (TCP/JSON)  │ │  │ │  (TCP/JSON)  │ │       │
+│  │ │  (gRPC)      │ │  │ │  (gRPC)      │ │  │ │  (gRPC)      │ │       │
 │  │ └──────┬───────┘ │  │ └──────┬───────┘ │  │ └──────┬───────┘ │       │
 │  │        │         │  │        │         │  │        │         │       │
 │  │ ┌──────▼───────┐ │  │ ┌──────▼───────┐ │  │ ┌──────▼──────┐ │       │
@@ -407,21 +407,21 @@ OR
 ### Build
 
 ```bash
-go build -o raft-kv .
-go build -o raft-kv-cli ./cmd/raft-kv/
+go build -o bin/raft-server ./cmd/raft-server/
+go build -o bin/raft-kv-cli ./cmd/raft-kv/
 ```
 
 ### Run a 3-Node Cluster
 
 ```bash
 # Terminal 1
-./raft-kv -id 0 -addrs 0:localhost:8000,1:localhost:8001,2:localhost:8002
+./bin/raft-server -id 0 -addrs 0:localhost:8000,1:localhost:8001,2:localhost:8002 -data ./data0
 
 # Terminal 2
-./raft-kv -id 1 -addrs 0:localhost:8000,1:localhost:8001,2:localhost:8002
+./bin/raft-server -id 1 -addrs 0:localhost:8000,1:localhost:8001,2:localhost:8002 -data ./data1
 
 # Terminal 3
-./raft-kv -id 2 -addrs 0:localhost:8000,1:localhost:8001,2:localhost:8002
+./bin/raft-server -id 2 -addrs 0:localhost:8000,1:localhost:8001,2:localhost:8002 -data ./data2
 ```
 
 ### Run Tests
@@ -468,21 +468,25 @@ OK
 
 ```
 raft-kv/
-├── main.go                  # Entry point, cluster setup
-├── go.mod
+├── cmd/
+│   ├── raft-server/
+│   │   └── main.go          # Entry point, cluster setup
+│   └── raft-kv/
+│       └── main.go          # Interactive CLI client
+├── proto/
+│   └── raftkv/v1/           # Protobuf definitions and generated gRPC code
 ├── node/
 │   ├── types.go             # Message types, log entry, node state
-│   ├── raft.go              # Core Raft logic (election + replication)
-│   ├── raft_test.go         # Unit tests
+│   ├── raft.go              # Core Raft logic, leader election, log compaction
+│   ├── raft_test.go         # Extensive unit & stress tests
 │   └── persistence.go       # WAL-based disk persistence
 ├── network/
-│   ├── server.go            # TCP server, JSON codec
-│   └── client.go            # TCP client for peer RPC calls
+│   ├── server.go            # gRPC server implementation
+│   ├── client.go            # gRPC client for peer RPC calls
+│   └── network_test.go      # End-to-end cluster integration tests
 ├── kvstore/
-│   └── store.go             # KV state machine
-└── cmd/
-    └── raft-kv/
-        └── main.go          # CLI tool
+│   └── store.go             # In-memory KV state machine with snapshot support
+└── go.mod
 ```
 
 ---
