@@ -32,3 +32,4 @@ data/
 *.wal
 *.log
 raft-kv-cli
+raft-server

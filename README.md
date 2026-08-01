@@ -405,24 +405,19 @@ OR
 
 - Go 1.21+
 
-### Build
-
-```bash
-go build -o bin/raft-server ./cmd/raft-server/
-go build -o bin/raft-kv-cli ./cmd/raft-kv/
-```
-
 ### Run a 3-Node Cluster
+
+You can run the servers directly from source without needing to compile them first:
 
 ```bash
 # Terminal 1
-./bin/raft-server -id 0 -addrs 0:localhost:8000,1:localhost:8001,2:localhost:8002 -data ./data0
+go run ./cmd/raft-server -id 0 -addrs 0:localhost:8000,1:localhost:8001,2:localhost:8002 -data ./data0
 
 # Terminal 2
-./bin/raft-server -id 1 -addrs 0:localhost:8000,1:localhost:8001,2:localhost:8002 -data ./data1
+go run ./cmd/raft-server -id 1 -addrs 0:localhost:8000,1:localhost:8001,2:localhost:8002 -data ./data1
 
 # Terminal 3
-./bin/raft-server -id 2 -addrs 0:localhost:8000,1:localhost:8001,2:localhost:8002 -data ./data2
+go run ./cmd/raft-server -id 2 -addrs 0:localhost:8000,1:localhost:8001,2:localhost:8002 -data ./data2
 ```
 
 ### Run Tests
@@ -439,7 +434,7 @@ go test ./node/ -v
 
 ```bash
 # Connect to any node in the cluster
-./raft-kv-cli localhost:8000
+go run ./cmd/raft-kv localhost:8000
 
 # Set a value
 > SET foo bar
