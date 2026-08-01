@@ -38,11 +38,11 @@ Raft is a **distributed consensus algorithm** designed to be understandable. It 
                          │ election timeout
                          ▼
                   ┌─────────────┐
-          ┌───────│  Candidate  │───────┐
+          ┌───────┤  Candidate  ├───────┐
           │       └──────┬──────┘       │
           │              │              │
-   receives vote    votes majority  receives
-   from higher term  ──────────▶  higher term
+   discovers      votes majority  discovers
+ current leader    ──────────▶   higher term
           │              │              │
           ▼              ▼              ▼
    ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
@@ -272,13 +272,13 @@ OR
 │  │ │ • Commit Idx │ │  │ │ • Commit Idx │ │  │ │ • Commit Idx │ │       │
 │  │ └──────┬───────┘ │  │ └──────┬───────┘ │  │ └──────┬───────┘ │       │
 │  │        │         │  │        │         │  │        │         │       │
-│  │ ┌──────▼───────┐ │  │ ┌──────▼───────┐ │  │ ┌──────▼──────┐ │       │
+│  │ ┌──────▼───────┐ │  │ ┌──────▼───────┐ │  │ ┌──────▼───────┐ │       │
 │  │ │  Network     │ │  │ │  Network     │ │  │ │  Network     │ │       │
 │  │ │  Layer       │ │  │ │  Layer       │ │  │ │  Layer       │ │       │
 │  │ │  (gRPC)      │ │  │ │  (gRPC)      │ │  │ │  (gRPC)      │ │       │
 │  │ └──────┬───────┘ │  │ └──────┬───────┘ │  │ └──────┬───────┘ │       │
 │  │        │         │  │        │         │  │        │         │       │
-│  │ ┌──────▼───────┐ │  │ ┌──────▼───────┐ │  │ ┌──────▼──────┐ │       │
+│  │ ┌──────▼───────┐ │  │ ┌──────▼───────┐ │  │ ┌──────▼───────┐ │       │
 │  │ │  KV Store    │ │  │ │  KV Store    │ │  │ │  KV Store    │ │       │
 │  │ │  (State      │ │  │ │  (State      │ │  │ │  (State      │ │       │
 │  │ │   Machine)   │ │  │ │   Machine)   │ │  │ │   Machine)   │ │       │
@@ -308,9 +308,10 @@ OR
   │  Append to Log  │
   └────────┬────────┘
            │
-           ▼
+           ├───(send RPCs)───┐
+           ▼                 ▼
   ┌─────────────────┐     ┌─────────────────┐
-  │  AppendEntries  │────▶│  AppendEntries  │
+  │  AppendEntries  │     │  AppendEntries  │
   │  RPC to Node 1  │     │  RPC to Node 2  │
   └────────┬────────┘     └────────┬────────┘
            │                       │
@@ -367,18 +368,19 @@ OR
   │  (vote for self)│
   └────────┬────────┘
            │
-           ▼
+           ├───(send RPCs)───┐
+           ▼                 ▼
   ┌─────────────────┐     ┌─────────────────┐
-  │  RequestVote    │────▶│  RequestVote    │
+  │  RequestVote    │     │  RequestVote    │
   │  RPC to Node 1  │     │  RPC to Node 2  │
   └────────┬────────┘     └────────┬────────┘
            │                       │
            ▼                       ▼
   ┌─────────────────┐     ┌─────────────────┐
-  │  Check:           │     │  Check:           │
-  │  • term >= mine?  │     │  • term >= mine?  │
-  │  • voted already? │     │  • voted already? │
-  │  • log up-to-date?│     │  • log up-to-date?│
+  │  Check:         │     │  Check:         │
+  │  • term >= mine?│     │  • term >= mine?│
+  │  • voted already│     │  • voted already│
+  │  • up-to-date?  │     │  • up-to-date?  │
   └────────┬────────┘     └────────┬────────┘
            │                       │
            ▼                       ▼
@@ -390,9 +392,8 @@ OR
                        │ (majority votes?)
                        ▼
   ┌─────────────────┐
-  │  Become           │
-  │  Leader           │
-  │  Start Heartbeats │
+  │ Become Leader   │
+  │ Start Heartbeats│
   └─────────────────┘
 ```
 
