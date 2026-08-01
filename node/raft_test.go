@@ -583,6 +583,95 @@ func TestTermStability(t *testing.T) {
 	}
 }
 
+func TestWALTruncationRecovery(t *testing.T) {
+	dir := t.TempDir()
+
+	wal, err := NewWAL(dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Append initial entries
+	wal.AppendEntry(LogEntry{Term: 1, Index: 1, Data: []byte("entry1")})
+	wal.AppendEntry(LogEntry{Term: 1, Index: 2, Data: []byte("entry2")})
+	wal.AppendEntry(LogEntry{Term: 1, Index: 3, Data: []byte("uncommitted3")})
+
+	// Truncate at index 3 (discard uncommitted3)
+	wal.TruncateLog(3)
+	wal.AppendEntry(LogEntry{Term: 2, Index: 3, Data: []byte("committed3")})
+	wal.Close()
+
+	// Recover WAL into new node
+	wal2, err := NewWAL(dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal2.Close()
+
+	commitCh := make(chan LogEntry, 100)
+	node := NewRaftNode(0, nil, commitCh, nil, nil, wal2)
+
+	// Verify log length and entry content
+	if len(node.raftLog) != 4 { // Index 0..3
+		t.Fatalf("Expected log length 4 after recovery, got %d", len(node.raftLog))
+	}
+	if string(node.raftLog[3].Data) != "committed3" {
+		t.Errorf("Expected 'committed3' after truncation recovery, got %q", string(node.raftLog[3].Data))
+	}
+	if node.commitIndex != 0 {
+		t.Errorf("Expected commitIndex=0 on restart safety check, got %d", node.commitIndex)
+	}
+}
+
+func TestCommitNotificationNoPolling(t *testing.T) {
+	cluster := newTestCluster(3)
+	defer cluster.stop()
+	cluster.start()
+
+	leader := cluster.waitForLeader(3 * time.Second)
+	if leader == nil {
+		t.Fatal("No leader elected")
+	}
+
+	start := time.Now()
+	resp := leader.SubmitClientRequest(ClientRequest{Op: "SET", Key: "fast", Value: "commit"})
+	elapsed := time.Since(start)
+
+	if !resp.Success {
+		t.Fatalf("Client request failed: %s", resp.Error)
+	}
+
+	t.Logf("Commit completed in %v", elapsed)
+	if elapsed > 200*time.Millisecond {
+		t.Errorf("Commit took unexpectedly long (%v), check polling latency", elapsed)
+	}
+}
+
+func TestInstallSnapshotHandling(t *testing.T) {
+	commitCh := make(chan LogEntry, 100)
+	node := NewRaftNode(0, []int{1}, commitCh, nil, nil, nil)
+	node.Start()
+	defer node.Stop()
+
+	// Send InstallSnapshot
+	snapReq := InstallSnapshotRequest{
+		Term:              1,
+		LeaderID:          1,
+		LastIncludedIndex: 50,
+		LastIncludedTerm:  1,
+		Data:              []byte("snapshot_data"),
+		Done:              true,
+	}
+
+	resp := node.SubmitInstallSnapshot(1, snapReq)
+	if resp.Term != 1 {
+		t.Errorf("Expected resp.Term=1, got %d", resp.Term)
+	}
+	if node.GetCommitIndex() != 50 {
+		t.Errorf("Expected commitIndex=50 after snapshot install, got %d", node.GetCommitIndex())
+	}
+}
+
 func clusterWaitForLeader(nodes []*RaftNode, timeout time.Duration) *RaftNode {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -595,4 +684,299 @@ func clusterWaitForLeader(nodes []*RaftNode, timeout time.Duration) *RaftNode {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return nil
+}
+
+// TestNoopOnLeaderElection verifies that a newly elected leader immediately commits
+// entries from prior terms by appending a no-op. Without this, old entries would remain
+// uncommitted until the next client write.
+func TestNoopOnLeaderElection(t *testing.T) {
+	client := newTestClient()
+	commitChs := make([]chan LogEntry, 3)
+	nodes := make([]*RaftNode, 3)
+
+	for i := range commitChs {
+		commitChs[i] = make(chan LogEntry, 100)
+	}
+
+	for i := 0; i < 3; i++ {
+		peers := []int{}
+		for j := 0; j < 3; j++ {
+			if i != j {
+				peers = append(peers, j)
+			}
+		}
+		nodes[i] = NewRaftNode(i, peers, commitChs[i],
+			client.sendRequestVote, client.sendAppendEntries, nil)
+		client.register(i, nodes[i])
+	}
+
+	// Start all nodes
+	for _, n := range nodes {
+		n.Start()
+	}
+	defer func() {
+		for _, n := range nodes {
+			n.Stop()
+		}
+		time.Sleep(50 * time.Millisecond)
+	}()
+
+	// Wait for leader election
+	leader := clusterWaitForLeader(nodes, 3*time.Second)
+	if leader == nil {
+		t.Fatal("No leader elected")
+	}
+	leaderID := leader.GetID()
+
+	// Submit an entry from the leader in term 1
+	resp := leader.SubmitClientRequest(ClientRequest{Op: "SET", Key: "priorterm", Value: "data"})
+	if !resp.Success {
+		t.Fatalf("Failed to submit initial entry: %s", resp.Error)
+	}
+	t.Logf("Initial entry committed by leader %d", leaderID)
+
+	// Stop the leader to force a new election
+	leader.Stop()
+	time.Sleep(100 * time.Millisecond)
+
+	// Wait for a new leader (different from the stopped one)
+	deadline := time.Now().Add(5 * time.Second)
+	var newLeader *RaftNode
+	for time.Now().Before(deadline) {
+		for _, n := range nodes {
+			if n.GetID() == leaderID {
+				continue
+			}
+			st, _ := n.GetState()
+			if st == Leader {
+				newLeader = n
+				break
+			}
+		}
+		if newLeader != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if newLeader == nil {
+		t.Fatal("No new leader elected after stopping old leader")
+	}
+
+	_, newTerm := newLeader.GetState()
+	t.Logf("New leader %d elected at term %d", newLeader.GetID(), newTerm)
+
+	// The new leader should have committed the no-op entry, which as a side effect
+	// commits all prior-term entries. Wait briefly for the no-op to be replicated.
+	time.Sleep(300 * time.Millisecond)
+
+	// Verify the no-op is in the log (last log index should be > the initial entry index)
+	newLeader.mu.Lock()
+	lastLogIdx := newLeader.lastLogIndex()
+	commitIdx := newLeader.commitIndex
+	newLeader.mu.Unlock()
+
+	// The commit index should include the no-op
+	if commitIdx < 2 {
+		t.Errorf("Expected commitIndex >= 2 (initial entry + no-op), got %d", commitIdx)
+	}
+	t.Logf("New leader lastLogIndex=%d commitIndex=%d — no-op committed prior-term entries", lastLogIdx, commitIdx)
+}
+
+// TestAutoSnapshotCompaction verifies that the log is automatically compacted
+// when the number of applied entries exceeds the configured threshold.
+func TestAutoSnapshotCompaction(t *testing.T) {
+	cluster := newTestCluster(3)
+	defer cluster.stop()
+	cluster.start()
+
+	leader := cluster.waitForLeader(3 * time.Second)
+	if leader == nil {
+		t.Fatal("No leader elected")
+	}
+
+	// Configure auto-compaction with a low threshold for testing
+	snapshotData := []byte(`{"snap":"test"}`)
+	leader.SetSnapshotConfig(5, func() ([]byte, error) {
+		return snapshotData, nil
+	})
+
+	// Submit entries to exceed the threshold (5)
+	for i := 0; i < 8; i++ {
+		resp := leader.SubmitClientRequest(ClientRequest{
+			Op:    "SET",
+			Key:   fmt.Sprintf("autosnap%d", i),
+			Value: fmt.Sprintf("val%d", i),
+		})
+		if !resp.Success {
+			t.Fatalf("Request %d failed: %s", i, resp.Error)
+		}
+	}
+
+	// Wait for the auto-snapshot goroutine to trigger
+	time.Sleep(500 * time.Millisecond)
+
+	leader.mu.Lock()
+	snapIdx := leader.snapshotIndex
+	snapTerm := leader.snapshotTerm
+	logLen := len(leader.raftLog)
+	firstLogIdx := leader.raftLog[0].Index
+	leader.mu.Unlock()
+
+	if snapIdx == 0 {
+		t.Fatal("Expected snapshot to have been triggered, but snapshotIndex is 0")
+	}
+
+	t.Logf("Auto-snapshot: snapshotIndex=%d snapshotTerm=%d logLen=%d firstLogIdx=%d",
+		snapIdx, snapTerm, logLen, firstLogIdx)
+
+	// Log should have been compacted
+	if firstLogIdx == 0 {
+		t.Errorf("Expected log to be compacted (firstLogIdx > 0), but firstLogIdx=0")
+	}
+}
+
+// TestSnapshotInstallApply verifies that when a follower receives InstallSnapshot,
+// the snapshot data is pushed to the snapshot notification channel so the state machine
+// can replace its state.
+func TestSnapshotInstallApply(t *testing.T) {
+	commitCh := make(chan LogEntry, 100)
+	snapshotNotifyCh := make(chan SnapshotData, 1)
+
+	n := NewRaftNode(0, []int{1}, commitCh, nil, nil, nil)
+	n.SetSnapshotNotifyCh(snapshotNotifyCh)
+	n.Start()
+	defer n.Stop()
+
+	// Prepare fake snapshot data representing a KV state
+	snapData := []byte(`{"hello":"world","foo":"bar"}`)
+
+	// Send InstallSnapshot RPC
+	snapReq := InstallSnapshotRequest{
+		Term:              1,
+		LeaderID:          1,
+		LastIncludedIndex: 50,
+		LastIncludedTerm:  1,
+		Data:              snapData,
+		Done:              true,
+	}
+
+	resp := n.SubmitInstallSnapshot(1, snapReq)
+	if resp.Term != 1 {
+		t.Errorf("Expected resp.Term=1, got %d", resp.Term)
+	}
+
+	// Verify the snapshot data was pushed to the notify channel
+	select {
+	case received := <-snapshotNotifyCh:
+		if received.Index != 50 {
+			t.Errorf("Expected snapshot.Index=50, got %d", received.Index)
+		}
+		if received.Term != 1 {
+			t.Errorf("Expected snapshot.Term=1, got %d", received.Term)
+		}
+		if string(received.Data) != string(snapData) {
+			t.Errorf("Expected snapshot data=%q, got %q", snapData, received.Data)
+		}
+		t.Log("Snapshot notification received with correct data")
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timed out waiting for snapshot notification on channel")
+	}
+}
+
+// TestSnapshotThenReplication verifies that after a snapshot is taken and the log
+// is compacted, subsequent client writes still work correctly.
+func TestSnapshotThenReplication(t *testing.T) {
+	cluster := newTestCluster(3)
+	defer cluster.stop()
+	cluster.start()
+
+	leader := cluster.waitForLeader(3 * time.Second)
+	if leader == nil {
+		t.Fatal("No leader elected")
+	}
+
+	// Submit some entries
+	for i := 0; i < 5; i++ {
+		resp := leader.SubmitClientRequest(ClientRequest{
+			Op:    "SET",
+			Key:   fmt.Sprintf("pre_snap_%d", i),
+			Value: fmt.Sprintf("val%d", i),
+		})
+		if !resp.Success {
+			t.Fatalf("Pre-snapshot request %d failed: %s", i, resp.Error)
+		}
+	}
+
+	// Manually take a snapshot to compact the log
+	leader.mu.Lock()
+	lastApplied := leader.lastApplied
+	term := leader.getEntryAt(lastApplied).Term
+	leader.mu.Unlock()
+
+	leader.TakeSnapshot(lastApplied, term, []byte(`{"pre_snap_0":"val0"}`))
+
+	// Verify log was compacted
+	leader.mu.Lock()
+	firstLogIdx := leader.raftLog[0].Index
+	leader.mu.Unlock()
+	if firstLogIdx == 0 {
+		t.Error("Expected log to be compacted after manual snapshot")
+	}
+	t.Logf("After snapshot: firstLogIdx=%d", firstLogIdx)
+
+	// Now submit more entries AFTER the snapshot — these should still work
+	for i := 0; i < 5; i++ {
+		resp := leader.SubmitClientRequest(ClientRequest{
+			Op:    "SET",
+			Key:   fmt.Sprintf("post_snap_%d", i),
+			Value: fmt.Sprintf("val%d", i),
+		})
+		if !resp.Success {
+			t.Fatalf("Post-snapshot request %d failed: %s", i, resp.Error)
+		}
+	}
+
+	t.Log("Post-snapshot replication succeeded — log compaction did not break consensus")
+}
+
+// TestTakeSnapshotIdempotent verifies that taking a snapshot with an older index is ignored.
+func TestTakeSnapshotIdempotent(t *testing.T) {
+	commitCh := make(chan LogEntry, 100)
+	n := NewRaftNode(0, nil, commitCh, nil, nil, nil)
+
+	// Manually set up some log entries
+	n.mu.Lock()
+	n.raftLog = append(n.raftLog, LogEntry{Term: 1, Index: 1, Data: []byte("e1")})
+	n.raftLog = append(n.raftLog, LogEntry{Term: 1, Index: 2, Data: []byte("e2")})
+	n.raftLog = append(n.raftLog, LogEntry{Term: 1, Index: 3, Data: []byte("e3")})
+	n.mu.Unlock()
+
+	// Take first snapshot at index 2
+	n.TakeSnapshot(2, 1, []byte(`{"snap":"v1"}`))
+
+	n.mu.Lock()
+	snap1Idx := n.snapshotIndex
+	logLen1 := len(n.raftLog)
+	n.mu.Unlock()
+
+	if snap1Idx != 2 {
+		t.Fatalf("Expected snapshotIndex=2, got %d", snap1Idx)
+	}
+
+	// Try to take an older snapshot at index 1 — should be ignored
+	n.TakeSnapshot(1, 1, []byte(`{"snap":"old"}`))
+
+	n.mu.Lock()
+	snap2Idx := n.snapshotIndex
+	logLen2 := len(n.raftLog)
+	n.mu.Unlock()
+
+	if snap2Idx != 2 {
+		t.Errorf("Expected snapshotIndex to remain 2 after old snapshot, got %d", snap2Idx)
+	}
+	if logLen2 != logLen1 {
+		t.Errorf("Expected log length to remain %d, got %d", logLen1, logLen2)
+	}
+
+	t.Logf("Idempotency: snapshotIndex=%d logLen=%d (unchanged)", snap2Idx, logLen2)
 }
