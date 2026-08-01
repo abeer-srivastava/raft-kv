@@ -1,162 +1,166 @@
 package network
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"sync"
 
+	"google.golang.org/grpc"
+
 	"github.com/abeer/raft-kv/node"
+	pb "github.com/abeer/raft-kv/proto/raftkv/v1"
 )
 
-// Server is a TCP server that handles incoming Raft RPCs
+// Server is a gRPC server that handles Raft internal RPCs and client requests
 type Server struct {
+	pb.UnimplementedRaftServiceServer
+	pb.UnimplementedKVServiceServer
+
 	mu                sync.RWMutex
+	grpcServer        *grpc.Server
 	listener          net.Listener
-	node              *node.RaftNode
+	raftNode          *node.RaftNode
 	addr              string
-	quit              chan struct{}
 	clientRequestFunc func(node.ClientRequest) node.ClientResponse
 }
 
-// NewServer creates a new network server
+// NewServer creates a new gRPC server instance
 func NewServer(addr string, raftNode *node.RaftNode) *Server {
 	return &Server{
-		addr: addr,
-		node: raftNode,
-		quit: make(chan struct{}),
+		addr:     addr,
+		raftNode: raftNode,
 	}
 }
 
-// SetClientRequestFunc sets the handler for client requests (allows serving GETs locally)
+// SetClientRequestFunc sets the handler for client requests
 func (s *Server) SetClientRequestFunc(fn func(node.ClientRequest) node.ClientResponse) {
 	s.clientRequestFunc = fn
 }
 
-// Start begins listening for connections
+// Start begins listening and serving gRPC requests
 func (s *Server) Start() error {
-	var err error
-	s.listener, err = net.Listen("tcp", s.addr)
+	lis, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", s.addr, err)
 	}
+	s.listener = lis
 
-	log.Printf("Server listening on %s", s.addr)
+	s.grpcServer = grpc.NewServer()
+	pb.RegisterRaftServiceServer(s.grpcServer, s)
+	pb.RegisterKVServiceServer(s.grpcServer, s)
 
-	go s.acceptLoop()
+	log.Printf("gRPC Server listening on %s", s.addr)
+
+	go func() {
+		if err := s.grpcServer.Serve(lis); err != nil && err != grpc.ErrServerStopped {
+			log.Printf("gRPC server error: %v", err)
+		}
+	}()
+
 	return nil
 }
 
-// Stop gracefully shuts down the server
+// Stop gracefully shuts down the gRPC server
 func (s *Server) Stop() {
-	close(s.quit)
+	if s.grpcServer != nil {
+		s.grpcServer.GracefulStop()
+	}
 	if s.listener != nil {
 		s.listener.Close()
 	}
 }
 
-// acceptLoop handles incoming connections
-func (s *Server) acceptLoop() {
-	for {
-		select {
-		case <-s.quit:
-			return
-		default:
-			conn, err := s.listener.Accept()
-			if err != nil {
-				select {
-				case <-s.quit:
-					return
-				default:
-					log.Printf("Failed to accept connection: %v", err)
-					continue
-				}
-			}
-			go s.handleConnection(conn)
-		}
-	}
-}
-
-// handleConnection processes messages from a single connection
-func (s *Server) handleConnection(conn net.Conn) {
-	defer conn.Close()
-
-	decoder := json.NewDecoder(conn)
-	encoder := json.NewEncoder(conn)
-
-	for {
-		var msg node.RPCMessage
-		if err := decoder.Decode(&msg); err != nil {
-			if err == io.EOF {
-				return
-			}
-			log.Printf("Failed to decode message: %v", err)
-			return
-		}
-
-		response, err := s.dispatch(msg)
-		if err != nil {
-			log.Printf("Failed to dispatch message: %v", err)
-			continue
-		}
-
-		if err := encoder.Encode(response); err != nil {
-			log.Printf("Failed to encode response: %v", err)
-			return
-		}
-	}
-}
-
-// dispatch routes a message to the appropriate handler
-func (s *Server) dispatch(msg node.RPCMessage) (node.RPCMessage, error) {
-	var respData json.RawMessage
-
-	switch msg.Type {
-	case "RequestVote":
-		var req node.RequestVoteRequest
-		if err := json.Unmarshal(msg.Data, &req); err != nil {
-			return node.RPCMessage{}, fmt.Errorf("failed to unmarshal RequestVote: %w", err)
-		}
-		resp := s.node.SubmitRequestVote(req.CandidateID, req)
-		data, _ := json.Marshal(resp)
-		respData = data
-
-	case "AppendEntries":
-		var req node.AppendEntriesRequest
-		if err := json.Unmarshal(msg.Data, &req); err != nil {
-			return node.RPCMessage{}, fmt.Errorf("failed to unmarshal AppendEntries: %w", err)
-		}
-		resp := s.node.SubmitAppendEntries(req.LeaderID, req)
-		data, _ := json.Marshal(resp)
-		respData = data
-
-	case "ClientRequest":
-		var req node.ClientRequest
-		if err := json.Unmarshal(msg.Data, &req); err != nil {
-			return node.RPCMessage{}, fmt.Errorf("failed to unmarshal ClientRequest: %w", err)
-		}
-		var resp node.ClientResponse
-		if s.clientRequestFunc != nil {
-			resp = s.clientRequestFunc(req)
-		} else {
-			resp = s.node.SubmitClientRequest(req)
-		}
-		data, _ := json.Marshal(resp)
-		respData = data
-
-	default:
-		return node.RPCMessage{}, fmt.Errorf("unknown message type: %s", msg.Type)
+// RequestVote gRPC RPC handler
+func (s *Server) RequestVote(ctx context.Context, req *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
+	internalReq := node.RequestVoteRequest{
+		Term:         req.Term,
+		CandidateID:  int(req.CandidateId),
+		LastLogIndex: req.LastLogIndex,
+		LastLogTerm:  req.LastLogTerm,
 	}
 
-	return node.RPCMessage{
-		Type: msg.Type + "Response",
-		Data: respData,
+	resp := s.raftNode.SubmitRequestVote(int(req.CandidateId), internalReq)
+
+	return &pb.RequestVoteResponse{
+		Term:        resp.Term,
+		VoteGranted: resp.VoteGranted,
 	}, nil
 }
 
-// GetAddr returns the server's address
+// AppendEntries gRPC RPC handler
+func (s *Server) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
+	entries := make([]node.LogEntry, len(req.Entries))
+	for i, e := range req.Entries {
+		entries[i] = node.LogEntry{
+			Term:  e.Term,
+			Index: e.Index,
+			Data:  e.Data,
+		}
+	}
+
+	internalReq := node.AppendEntriesRequest{
+		Term:         req.Term,
+		LeaderID:     int(req.LeaderId),
+		PrevLogIndex: req.PrevLogIndex,
+		PrevLogTerm:  req.PrevLogTerm,
+		Entries:      entries,
+		LeaderCommit: req.LeaderCommit,
+	}
+
+	resp := s.raftNode.SubmitAppendEntries(int(req.LeaderId), internalReq)
+
+	return &pb.AppendEntriesResponse{
+		Term:          resp.Term,
+		Success:       resp.Success,
+		ConflictIndex: resp.ConflictIndex,
+		ConflictTerm:  resp.ConflictTerm,
+	}, nil
+}
+
+// InstallSnapshot gRPC RPC handler
+func (s *Server) InstallSnapshot(ctx context.Context, req *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
+	internalReq := node.InstallSnapshotRequest{
+		Term:              req.Term,
+		LeaderID:          int(req.LeaderId),
+		LastIncludedIndex: req.LastIncludedIndex,
+		LastIncludedTerm:  req.LastIncludedTerm,
+		Data:              req.Data,
+		Done:              req.Done,
+	}
+
+	resp := s.raftNode.SubmitInstallSnapshot(int(req.LeaderId), internalReq)
+
+	return &pb.InstallSnapshotResponse{
+		Term: resp.Term,
+	}, nil
+}
+
+// Execute gRPC KV service handler
+func (s *Server) Execute(ctx context.Context, req *pb.ClientRequest) (*pb.ClientResponse, error) {
+	internalReq := node.ClientRequest{
+		Op:    req.Op,
+		Key:   req.Key,
+		Value: req.Value,
+	}
+
+	var resp node.ClientResponse
+	if s.clientRequestFunc != nil {
+		resp = s.clientRequestFunc(internalReq)
+	} else {
+		resp = s.raftNode.SubmitClientRequest(internalReq)
+	}
+
+	return &pb.ClientResponse{
+		Success:    resp.Success,
+		Value:      resp.Value,
+		Error:      resp.Error,
+		LeaderAddr: resp.LeaderAddr,
+	}, nil
+}
+
+// GetAddr returns the listening network address
 func (s *Server) GetAddr() string {
 	if s.listener != nil {
 		return s.listener.Addr().String()
